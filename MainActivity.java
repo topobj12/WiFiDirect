@@ -1,5 +1,12 @@
 package com.example.directnetwork;
 
+import java.io.BufferedOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -7,10 +14,15 @@ import com.example.directnetwork.DeviceList.DeviceActionListener;
 
 
 import android.app.Activity;
+import android.app.FragmentManager;
+import android.app.FragmentTransaction;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.database.sqlite.SQLiteDatabase;
+import android.net.wifi.WifiInfo;
+import android.net.wifi.WifiManager;
 import android.net.wifi.p2p.WifiP2pConfig;
 import android.net.wifi.p2p.WifiP2pDevice;
 import android.net.wifi.p2p.WifiP2pDeviceList;
@@ -19,7 +31,9 @@ import android.net.wifi.p2p.WifiP2pManager.ActionListener;
 import android.net.wifi.p2p.WifiP2pManager.Channel;
 import android.net.wifi.p2p.WifiP2pManager.ChannelListener;
 import android.net.wifi.p2p.WifiP2pManager.PeerListListener;
+import android.os.AsyncTask;
 import android.os.Bundle;
+import android.os.Environment;
 import android.provider.Settings;
 import android.util.Log;
 import android.view.Menu;
@@ -30,13 +44,23 @@ import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+/**
+ * An activity that uses WiFi Direct APIs to discover and connect with available
+ * devices. WiFi Direct APIs are asynchronous and rely on callback mechanism
+ * using interfaces to notify the application of operation success or failure.
+ * The application should also register a BroadcastReceiver for notification of
+ * WiFi state related events.
+ */
 
 //メインActivity
 public class MainActivity extends Activity implements ChannelListener, DeviceActionListener {
 
 	//定数
     public static final String TAG = "wifidirectdemo";
-    
+    public static int SEND_PHASE = 0;
+    public static boolean SEND_SUCCESS = false;    
+    public static String MY_ADDRESS = "";
+    public static Activity MAIN_ACT ;
     //変数
     private WifiP2pManager manager;
     private boolean isWifiP2pEnabled = false;
@@ -46,12 +70,20 @@ public class MainActivity extends Activity implements ChannelListener, DeviceAct
     private Channel channel;
     private BroadcastReceiver receiver = null;
     
+    //IP
+    String IPaddress = "";
+    
     /*============================================
      * 追加した変数
      * ===========================================
      * */
     private List<WifiP2pDevice> peers = new ArrayList<WifiP2pDevice>(); //取得したピアのリスト
 
+    
+    
+    /**
+     * @param isWifiP2pEnabled the isWifiP2pEnabled to set
+     */
     public void setIsWifiP2pEnabled(boolean isWifiP2pEnabled) {
         this.isWifiP2pEnabled = isWifiP2pEnabled;
     }
@@ -62,6 +94,8 @@ public class MainActivity extends Activity implements ChannelListener, DeviceAct
         super.onCreate(savedInstanceState);
         setContentView(R.layout.main);
 
+        // add necessary intent values to be matched.
+
         // intentFilterを作成し、Actionを監視する。　Actionが発生したらintentを通知
         intentFilter.addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION);	//WiFi Directの有効・無効状態
         intentFilter.addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION);	//デバイス情報の変更通知　（通信可能なデバイスの発見・ロストなど）
@@ -70,8 +104,10 @@ public class MainActivity extends Activity implements ChannelListener, DeviceAct
 
         manager = (WifiP2pManager) getSystemService(Context.WIFI_P2P_SERVICE);
         channel = manager.initialize(this, getMainLooper(), null);	// p2p機能を利用するのに必要なインスタンス
+        MAIN_ACT = this;
     }
 
+    /** register the BroadcastReceiver with the intent values to be matched */
     //Activity実行時、Activity再開時に呼び出し
     @Override
     public void onResume() {
@@ -87,6 +123,10 @@ public class MainActivity extends Activity implements ChannelListener, DeviceAct
         unregisterReceiver(receiver);	//ブロードキャストレシーバを解除
     }
 
+    /**
+     * Remove all peers and clear all fields. This is called on
+     * BroadcastReceiver receiving a state change event.
+     */
     //すべてのピアを削除し、すべてのフィールドをクリアする。BroadcastReceiverが状態変更イベントを受信すると呼ばれる
     public void resetData() {
         DeviceList fragmentList = (DeviceList) getFragmentManager()
@@ -99,6 +139,7 @@ public class MainActivity extends Activity implements ChannelListener, DeviceAct
         if (fragmentDetails != null) {
             fragmentDetails.resetViews();
         }
+
     }
 
     //オプションメニューの作成
@@ -109,6 +150,10 @@ public class MainActivity extends Activity implements ChannelListener, DeviceAct
         return true;
     }
 
+    /*
+     * (non-Javadoc)
+     * @see android.app.Activity#onOptionsItemSelected(android.view.MenuItem)
+     */
     //オプションアイテムが選択されたときに呼び出し
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
@@ -116,7 +161,11 @@ public class MainActivity extends Activity implements ChannelListener, DeviceAct
             case R.id.atn_direct_enable:	//wifi directの設定が選択された場合
                 if (manager != null && channel != null) {
 
-                    startActivity(new Intent(Settings.ACTION_WIRELESS_SETTINGS));
+                	// intentのインスタンス生成
+    				Intent intent = new Intent(MainActivity.this, SubActivity.class);
+    				//次のactivityの起動
+    				startActivity(intent);
+
                 } else {
                     Log.e(TAG, "channel or manager is null");
                 }
@@ -184,6 +233,7 @@ public class MainActivity extends Activity implements ChannelListener, DeviceAct
             @Override
             public void onSuccess() {
                 // WiFiDirectBroadcastReceiver will notify us. Ignore for now.
+            	
             }
             @Override
             public void onFailure(int reason) {
@@ -210,6 +260,7 @@ public class MainActivity extends Activity implements ChannelListener, DeviceAct
             @Override
             public void onSuccess() {
                 fragment.getView().setVisibility(View.GONE);
+
             }
 
         });
@@ -266,4 +317,6 @@ public class MainActivity extends Activity implements ChannelListener, DeviceAct
         }
 
     }
+    
+
 }
